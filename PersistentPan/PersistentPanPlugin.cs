@@ -74,8 +74,12 @@ namespace vatSys.PersistentPan
 
                     case WmMouseWheel:
                         int delta = SignedHighWord(message.WParam.ToInt64());
-                        ZoomWithWheel(asd, delta);
                         Log("Wheel " + delta.ToString());
+                        try
+                        {
+                            asd.BeginInvoke((MethodInvoker)(() => ZoomWithWheel(asd, delta)));
+                        }
+                        catch (InvalidOperationException) { }
                         return true;
                 }
             }
@@ -166,6 +170,16 @@ namespace vatSys.PersistentPan
             setZoom.Invoke(asd, new object[] { (double)next, true, false, false });
             int after = Convert.ToInt32(getRange.Invoke(asd, null));
             Log("Range " + current.ToString() + " -> " + after.ToString() + " requested " + next.ToString());
+
+            // SetZoom updates the render parameters, but the message filter
+            // runs before the normal control message dispatch. Force the ASD
+            // to repaint after the deferred call so the new range is visible.
+            MethodInfo render = asd.GetType().GetMethod(
+                "Render", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null, Type.EmptyTypes, null);
+            if (render != null)
+                render.Invoke(asd, null);
+            asd.Invalidate();
         }
 
         private static int MouseX(Message message)
