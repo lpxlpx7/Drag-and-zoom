@@ -26,4 +26,6 @@ vatSys SDK 要求插件放在**当前 Profile 目录**的 `Plugins` 子目录，
 
 将 `PersistentPan\bin\Release\vatSys.PersistentPan.dll` 复制到该目录，重启 vatSys。加载 Profile 后，在 ASD 上按住中键拖动并释放，视图会停留在释放位置。
 
+新版本还支持 ASD 鼠标滚轮缩放：滚轮向上放大，向下缩小。插件会在 DLL 所在目录写入 `PersistentPan.log`，用于确认插件加载以及是否收到中键/滚轮消息。
+
 插件使用 vatSys SDK 的公开 `IPlugin` 接口，并通过反射连接公开的 ASD 控件，以适配当前安装版的内部窗口结构。

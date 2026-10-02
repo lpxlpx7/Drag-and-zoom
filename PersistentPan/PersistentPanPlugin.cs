@@ -1,206 +1,194 @@
 using System;
 using System.Collections.Generic;
-using System.Drawing;
+using System.IO;
 using System.Reflection;
-using System.Threading;
 using System.Windows.Forms;
 using vatsys.Plugin;
 
 namespace vatSys.PersistentPan
 {
     /// <summary>
-    /// Keeps the centre reached by a middle-button pan instead of allowing the
-    /// built-in temporary-pan behaviour to restore the previous centre.
-    ///
-    /// vatSys does not expose ASD mouse events through IPlugin, so the plugin
-    /// uses reflection only for the ASD control and its public SetDisplayCenter
-    /// API. This keeps it compatible with the normal SDK loading mechanism.
+    /// Makes the ASD middle-button pan persistent and adds mouse-wheel zoom.
+    /// The ASD is a Direct2D control and its mouse handlers are registered in a
+    /// way that does not reliably raise normal WinForms mouse events. Therefore
+    /// this plugin observes the WinForms message pump instead.
     /// </summary>
-    public sealed class PersistentPanPlugin : IPlugin
+    public sealed class PersistentPanPlugin : IPlugin, IMessageFilter
     {
-        private readonly System.Windows.Forms.Timer discoveryTimer;
-        private readonly HashSet<Control> hookedControls = new HashSet<Control>();
-        private readonly Dictionary<Control, object> lastPanCentres = new Dictionary<Control, object>();
-        private readonly HashSet<Control> middleButtonDown = new HashSet<Control>();
+        private const int WmMouseMove = 0x0200;
+        private const int WmLButtonUp = 0x0202;
+        private const int WmMButtonDown = 0x0207;
+        private const int WmMButtonUp = 0x0208;
+        private const int WmMouseWheel = 0x020A;
+        private const int MkMButton = 0x0010;
+
+        private readonly Dictionary<Control, object> lastCentres = new Dictionary<Control, object>();
+        private readonly HashSet<Control> panning = new HashSet<Control>();
+        private readonly Dictionary<IntPtr, Control> controls = new Dictionary<IntPtr, Control>();
+        private readonly string logPath;
 
         public PersistentPanPlugin()
         {
-            discoveryTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-            discoveryTimer.Tick += DiscoveryTimer_Tick;
-            discoveryTimer.Start();
+            logPath = Path.Combine(Path.GetDirectoryName(typeof(PersistentPanPlugin).Assembly.Location), "PersistentPan.log");
+            Application.AddMessageFilter(this);
+            Log("Plugin loaded");
         }
 
         public string Name
         {
-            get { return "Persistent Middle-Button Pan"; }
+            get { return "Persistent Middle-Button Pan + Wheel Zoom"; }
         }
 
-        public void OnFDRUpdate(vatsys.FDP2.FDR fdr)
-        {
-        }
+        public void OnFDRUpdate(vatsys.FDP2.FDR fdr) { }
 
-        public void OnRadarTrackUpdate(vatsys.RDP.RadarTrack radarTrack)
-        {
-        }
+        public void OnRadarTrackUpdate(vatsys.RDP.RadarTrack radarTrack) { }
 
-        private void DiscoveryTimer_Tick(object sender, EventArgs e)
+        public bool PreFilterMessage(ref Message message)
         {
             try
             {
-                foreach (Form form in Application.OpenForms)
+                Control asd = FindAsd(message.HWnd);
+                if (asd == null || asd.IsDisposed)
+                    return false;
+
+                switch (message.Msg)
                 {
-                    DiscoverControls(form);
+                    case WmMButtonDown:
+                        panning.Add(asd);
+                        SaveCentre(asd);
+                        Log("Middle down");
+                        break;
+
+                    case WmMouseMove:
+                        if (panning.Contains(asd) && (((long)message.WParam.ToInt64() & MkMButton) != 0))
+                            SaveCentre(asd);
+                        break;
+
+                    case WmMButtonUp:
+                        if (panning.Remove(asd))
+                        {
+                            object finalCentre;
+                            if (!lastCentres.TryGetValue(asd, out finalCentre))
+                                finalCentre = ReadCentre(asd);
+                            lastCentres.Remove(asd);
+                            RestoreAfterVatSys(asd, finalCentre);
+                            Log("Middle up; restore captured centre");
+                        }
+                        break;
+
+                    case WmMouseWheel:
+                        ZoomWithWheel(asd, SignedHighWord(message.WParam.ToInt64()));
+                        break;
                 }
             }
-            catch
+            catch (Exception exception)
             {
-                // Plugin discovery must never interfere with vatSys startup.
-            }
-        }
-
-        private void DiscoverControls(Control parent)
-        {
-            if (parent == null)
-                return;
-
-            if (parent.GetType().FullName == "vatsys.ASDControlDX" && hookedControls.Add(parent))
-            {
-                parent.MouseDown += AsdMouseDown;
-                parent.MouseMove += AsdMouseMove;
-                parent.MouseUp += AsdMouseUp;
-                parent.MouseLeave += AsdMouseLeave;
+                Log(exception.ToString());
             }
 
-            foreach (Control child in parent.Controls)
-            {
-                DiscoverControls(child);
-            }
+            // Do not consume messages. vatSys still receives the original input.
+            return false;
         }
 
-        private void AsdMouseDown(object sender, MouseEventArgs e)
+        private Control FindAsd(IntPtr handle)
         {
-            if (e.Button != MouseButtons.Middle)
-                return;
-
-            Control asd = sender as Control;
-            if (asd == null)
-                return;
-
-            middleButtonDown.Add(asd);
-            object centre = ReadCurrentCentre(asd);
-            if (centre != null)
-                lastPanCentres[asd] = centre;
-        }
-
-        private void AsdMouseMove(object sender, MouseEventArgs e)
-        {
-            Control asd = sender as Control;
-            if (asd == null || !middleButtonDown.Contains(asd))
-                return;
-
-            // Capture while the built-in temporary-pan centre is still active.
-            object centre = ReadCurrentCentre(asd);
-            if (centre != null)
-                lastPanCentres[asd] = centre;
-        }
-
-        private void AsdMouseUp(object sender, MouseEventArgs e)
-        {
-            if (e.Button != MouseButtons.Middle)
-                return;
-
-            Control asd = sender as Control;
-            if (asd == null || asd.IsDisposed)
-                return;
-
-            middleButtonDown.Remove(asd);
-            object lastCentre;
-            if (!lastPanCentres.TryGetValue(asd, out lastCentre))
-                lastCentre = ReadCurrentCentre(asd);
-
-            lastPanCentres.Remove(asd);
-
-            // Run after vatSys's own MouseUp handler has finished. The built-in
-            // handler may restore the temporary pan centre during MouseUp, so we
-            // apply the centre captured during MouseMove afterwards.
-            try
-            {
-                object centreToRestore = lastCentre;
-                asd.BeginInvoke((MethodInvoker)(() => RestoreCentre(asd, centreToRestore)));
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        }
-
-        private void AsdMouseLeave(object sender, EventArgs e)
-        {
-            Control asd = sender as Control;
-            if (asd == null || !middleButtonDown.Contains(asd))
-                return;
-
-            object centre = ReadCurrentCentre(asd);
-            if (centre != null)
-                lastPanCentres[asd] = centre;
-        }
-
-        private static object ReadCurrentCentre(Control asd)
-        {
-            try
-            {
-                MethodInfo getRenderParams = asd.GetType().GetMethod(
-                    "GetRenderParams",
-                    BindingFlags.Instance | BindingFlags.Public,
-                    null,
-                    new[] { typeof(bool) },
-                    null);
-                MethodInfo setDisplayCenter = asd.GetType().GetMethod(
-                    "SetDisplayCenter",
-                    BindingFlags.Instance | BindingFlags.Public,
-                    null,
-                    null,
-                    null);
-
-                if (getRenderParams == null || setDisplayCenter == null)
-                    return null;
-
-                object renderParams = getRenderParams.Invoke(asd, new object[] { false });
-                if (renderParams == null)
-                    return null;
-
-                PropertyInfo centreProperty = renderParams.GetType().GetProperty("ScreenCentre");
-                object centre = centreProperty == null ? null : centreProperty.GetValue(renderParams, null);
-                return centre;
-            }
-            catch
-            {
+            if (handle == IntPtr.Zero)
                 return null;
+
+            Control cached;
+            if (controls.TryGetValue(handle, out cached) && !cached.IsDisposed)
+                return cached;
+
+            Control control = Control.FromHandle(handle);
+            while (control != null)
+            {
+                if (control.GetType().FullName == "vatsys.ASDControlDX")
+                {
+                    controls[handle] = control;
+                    return control;
+                }
+                control = control.Parent;
             }
+            return null;
         }
 
-        private static void RestoreCentre(Control asd, object centre)
+        private void SaveCentre(Control asd)
         {
-            if (centre == null || asd == null || asd.IsDisposed)
+            object centre = ReadCentre(asd);
+            if (centre != null)
+                lastCentres[asd] = centre;
+        }
+
+        private static object ReadCentre(Control asd)
+        {
+            MethodInfo getRenderParams = asd.GetType().GetMethod(
+                "GetRenderParams", BindingFlags.Instance | BindingFlags.Public,
+                null, new[] { typeof(bool) }, null);
+            if (getRenderParams == null)
+                return null;
+
+            object renderParams = getRenderParams.Invoke(asd, new object[] { false });
+            PropertyInfo centre = renderParams == null ? null : renderParams.GetType().GetProperty("ScreenCentre");
+            return centre == null ? null : centre.GetValue(renderParams, null);
+        }
+
+        private static void RestoreAfterVatSys(Control asd, object centre)
+        {
+            if (centre == null || asd.IsDisposed)
                 return;
 
             try
             {
-                MethodInfo setDisplayCenter = asd.GetType().GetMethod(
-                    "SetDisplayCenter",
-                    BindingFlags.Instance | BindingFlags.Public,
-                    null,
-                    null,
-                    null);
-
-                if (setDisplayCenter == null)
-                    return;
-
-                // SetDisplayCenter(Coordinate, redraw, preserveRange).
-                setDisplayCenter.Invoke(asd, new[] { centre, (object)true, (object)false });
+                asd.BeginInvoke((MethodInvoker)(() =>
+                {
+                    MethodInfo setDisplayCenter = asd.GetType().GetMethod(
+                        "SetDisplayCenter", BindingFlags.Instance | BindingFlags.Public);
+                    if (setDisplayCenter != null)
+                        setDisplayCenter.Invoke(asd, new[] { centre, (object)true, (object)false });
+                }));
             }
-            catch
+            catch (InvalidOperationException) { }
+        }
+
+        private static void ZoomWithWheel(Control asd, int delta)
+        {
+            if (delta == 0)
+                return;
+
+            MethodInfo getRenderParams = asd.GetType().GetMethod(
+                "GetRenderParams", BindingFlags.Instance | BindingFlags.Public,
+                null, new[] { typeof(bool) }, null);
+            MethodInfo setZoom = asd.GetType().GetMethod(
+                "SetZoom", BindingFlags.Instance | BindingFlags.Public,
+                null, new[] { typeof(double), typeof(bool), typeof(bool), typeof(bool) }, null);
+            if (getRenderParams == null || setZoom == null)
+                return;
+
+            object renderParams = getRenderParams.Invoke(asd, new object[] { false });
+            PropertyInfo zoom = renderParams == null ? null : renderParams.GetType().GetProperty("Zoom");
+            if (zoom == null)
+                return;
+
+            double current = Convert.ToDouble(zoom.GetValue(renderParams, null));
+            // End/PgDn change the range in 20% steps. Wheel uses the same
+            // direction: wheel up zooms in, wheel down zooms out.
+            double next = delta > 0 ? current * 0.8 : current * 1.25;
+            setZoom.Invoke(asd, new object[] { next, true, false, true });
+        }
+
+        private static int SignedHighWord(long value)
+        {
+            int word = (int)((value >> 16) & 0xffff);
+            return word >= 0x8000 ? word - 0x10000 : word;
+        }
+
+        private void Log(string text)
+        {
+            try
             {
+                File.AppendAllText(logPath, DateTime.Now.ToString("s") + " " + text + Environment.NewLine);
             }
+            catch { }
         }
     }
 }
