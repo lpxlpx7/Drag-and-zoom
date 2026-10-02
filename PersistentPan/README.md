@@ -1,31 +1,91 @@
-# vatSys Persistent Pan Plugin
+# vatSys Persistent Pan and Wheel Zoom Plugin
 
-这个插件让 vatSys 的 ASD 使用鼠标中键拖动后保持拖动结束的位置，不再回到拖动前的中心点。
+A vatSys plugin that keeps the final position after middle-button panning and adds mouse-wheel zooming to the ASD.
 
-## 构建
+## Features
 
-项目目标为 vatSys 使用的 `.NET Framework 4.7.2` 和 `x86`：
+- Keeps the map at the position reached with middle-button dragging.
+- Uses vatSys's native pan calculation and rendering state.
+- Zooms the ASD with the mouse wheel.
+- Wheel up zooms in; wheel down zooms out.
+- Writes a diagnostic log next to the plugin DLL.
+- Targets the 32-bit .NET Framework 4.7.2 vatSys application.
 
-```powershell
-msbuild .\PersistentPan\PersistentPan.csproj /p:Configuration=Release /p:Platform=x86
+## Installation
+
+1. Exit every running vatSys process.
+2. Open the `Plugins` directory of the Profile you want to use.
+
+   Example:
+
+   ```text
+   C:\Users\<username>\Documents\vatSys Files\Profiles\ZBPE FIR Beijing\Plugins\
+   ```
+
+3. Copy `vatSys.PersistentPan.dll` from the Release package into that directory.
+4. Start vatSys and load the Profile.
+
+The plugin must be installed in the active Profile's `Plugins` directory. Installing it only next to `vatSys.exe` does not load it.
+
+## Usage
+
+### Persistent panning
+
+1. Move the mouse over the ASD.
+2. Hold the middle mouse button.
+3. Drag the map.
+4. Release the middle mouse button.
+
+The ASD remains at the final position instead of returning to the original centre.
+
+### Wheel zoom
+
+- Scroll up to zoom in.
+- Scroll down to zoom out.
+
+The plugin uses vatSys's ASD zoom range and limits.
+
+## Diagnostics
+
+After the plugin loads, it creates:
+
+```text
+PersistentPan.log
 ```
 
-如果系统没有 `msbuild`，可用 Visual Studio Developer PowerShell，或直接使用：
+The log is stored in the same `Plugins` directory as the DLL. Typical entries include:
+
+```text
+Plugin loaded
+Middle down 1000,500
+Middle up 1200,650; replay final move
+Wheel 120
+Range 1500 -> 1200 requested 1200
+```
+
+If the log is not created, vatSys did not load the plugin. Check that the DLL is in the active Profile's `Plugins` directory and restart vatSys completely.
+
+## Building from source
+
+Requirements:
+
+- Windows
+- .NET Framework 4.7.2 Developer Pack
+- An MSBuild installation
+- A local vatSys installation at `I:\vatSys`, or an updated `HintPath` in the project file
+
+Build the x86 Release configuration:
 
 ```powershell
 dotnet msbuild .\PersistentPan\PersistentPan.csproj /p:Configuration=Release /p:Platform=x86
 ```
 
-## 安装
-
-vatSys SDK 要求插件放在**当前 Profile 目录**的 `Plugins` 子目录，而不是固定放在 `I:\vatSys\bin`。例如：
+The output is created at:
 
 ```text
-<Profile目录>\Plugins\vatSys.PersistentPan.dll
+PersistentPan\bin\Release\vatSys.PersistentPan.dll
 ```
 
-将 `PersistentPan\bin\Release\vatSys.PersistentPan.dll` 复制到该目录，重启 vatSys。加载 Profile 后，在 ASD 上按住中键拖动并释放，视图会停留在释放位置。
+## Compatibility
 
-新版本还支持 ASD 鼠标滚轮缩放：滚轮向上放大，向下缩小。插件会在 DLL 所在目录写入 `PersistentPan.log`，用于确认插件加载以及是否收到中键/滚轮消息。
-
-插件使用 vatSys SDK 的公开 `IPlugin` 接口，并通过反射连接公开的 ASD 控件，以适配当前安装版的内部窗口结构。
+This plugin is built against the vatSys SDK exposed by `vatSys.exe`. It may need to be rebuilt when the vatSys executable changes its internal ASD implementation.
