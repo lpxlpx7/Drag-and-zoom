@@ -1,0 +1,4 @@
+PersistentPan/bin/
+PersistentPan/obj/
+*.user
+*.suo
