@@ -64,6 +64,36 @@ Range 1500 -> 1200 requested 1200
 
 If no log is created, confirm that the DLL is in the active Profile's `Plugins` directory and restart every vatSys process.
 
+## Frequently Asked Questions
+
+### vatSys reports that the plugin could not be loaded
+
+Windows may block DLL files downloaded from the Internet. This can prevent vatSys from loading the plugin even when the DLL is in the correct directory.
+
+To remove the block:
+
+1. Close vatSys completely.
+2. Right-click `vatSys.PersistentPan.dll`.
+3. Select **Properties**.
+4. On the **General** tab, look for a security message at the bottom of the window.
+5. Enable **Unblock**.
+6. Click **Apply**, then **OK**.
+7. Start vatSys again.
+
+The **Unblock** option may not appear for files that Windows has not marked as downloaded from the Internet.
+
+The same operation can be performed in PowerShell:
+
+```powershell
+Unblock-File "C:\Users\<username>\Documents\vatSys Files\Profiles\<Profile Name>\Plugins\vatSys.PersistentPan.dll"
+```
+
+If the plugin still does not load, confirm that the DLL is in the active Profile's `Plugins` directory, not in `vatSys\bin\Plugins`, and check that the DLL was built against the same vatSys release installed on the computer.
+
+### No `PersistentPan.log` is created
+
+The log is created only after vatSys successfully discovers and instantiates the plugin. Check the DLL path, unblock the file, restart all vatSys processes, and verify the vatSys version compatibility.
+
 ## Building
 
 The project targets the 32-bit .NET Framework 4.7.2 environment used by vatSys.
