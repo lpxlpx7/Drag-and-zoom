@@ -141,26 +141,31 @@ namespace vatSys.PersistentPan
             catch (InvalidOperationException) { }
         }
 
-        private static void ZoomWithWheel(Control asd, int delta)
+        private void ZoomWithWheel(Control asd, int delta)
         {
             if (delta == 0)
                 return;
 
-            Form form = asd.FindForm();
-            if (form == null)
+            MethodInfo getRange = asd.GetType().GetMethod(
+                "GetRange", BindingFlags.Instance | BindingFlags.Public,
+                null, Type.EmptyTypes, null);
+            MethodInfo setZoom = asd.GetType().GetMethod(
+                "SetZoom", BindingFlags.Instance | BindingFlags.Public,
+                null, new[] { typeof(double), typeof(bool), typeof(bool), typeof(bool) }, null);
+            if (getRange == null || setZoom == null)
                 return;
 
-            // Use vatSys's own key handler so the wheel has exactly the same
-            // step, limits, and direction as END/PAGEDOWN. In the installed
-            // vatSys build: End = range decrease (zoom in), PgDn = range
-            // increase (zoom out).
-            MethodInfo keyDown = form.GetType().GetMethod(
-                "MainForm_KeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (keyDown == null)
-                return;
+            int current = Convert.ToInt32(getRange.Invoke(asd, null));
+            int next = delta > 0
+                ? (int)Math.Round(current * 0.8, MidpointRounding.AwayFromZero)
+                : (int)Math.Round(current * 1.25, MidpointRounding.AwayFromZero);
 
-            Keys key = delta > 0 ? Keys.End : Keys.PageDown;
-            keyDown.Invoke(form, new object[] { form, new KeyEventArgs(key) });
+            // SetZoom expects the range value, not RenderParams.Zoom. The last
+            // argument is only an equality short-circuit; keep the same range
+            // update path used by the native ASD controls.
+            setZoom.Invoke(asd, new object[] { (double)next, true, false, false });
+            int after = Convert.ToInt32(getRange.Invoke(asd, null));
+            Log("Range " + current.ToString() + " -> " + after.ToString() + " requested " + next.ToString());
         }
 
         private static int MouseX(Message message)
