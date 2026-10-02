@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.Composition;
 using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
@@ -13,6 +14,7 @@ namespace vatSys.PersistentPan
     /// way that does not reliably raise normal WinForms mouse events. Therefore
     /// this plugin observes the WinForms message pump instead.
     /// </summary>
+    [Export(typeof(IPlugin))]
     public sealed class PersistentPanPlugin : IPlugin, IMessageFilter
     {
         private const int WmMouseMove = 0x0200;
