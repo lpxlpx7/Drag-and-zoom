@@ -164,21 +164,17 @@ namespace vatSys.PersistentPan
                 ? (int)Math.Round(current * 0.8, MidpointRounding.AwayFromZero)
                 : (int)Math.Round(current * 1.25, MidpointRounding.AwayFromZero);
 
-            // SetZoom expects the range value, not RenderParams.Zoom. The last
-            // argument is only an equality short-circuit; keep the same range
-            // update path used by the native ASD controls.
-            setZoom.Invoke(asd, new object[] { (double)next, true, false, false });
+            // SetZoom expects the range value, not RenderParams.Zoom. The third
+            // argument tells vatSys to write the calculated zoom into the
+            // render parameters. Without it only the internal range field
+            // changes while the picture remains at the old scale.
+            setZoom.Invoke(asd, new object[] { (double)next, true, true, false });
             int after = Convert.ToInt32(getRange.Invoke(asd, null));
             Log("Range " + current.ToString() + " -> " + after.ToString() + " requested " + next.ToString());
 
-            // SetZoom updates the render parameters, but the message filter
-            // runs before the normal control message dispatch. Force the ASD
-            // to repaint after the deferred call so the new range is visible.
-            MethodInfo render = asd.GetType().GetMethod(
-                "Render", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                null, Type.EmptyTypes, null);
-            if (render != null)
-                render.Invoke(asd, null);
+            // SetZoom updates the render parameters; vatSys's render loop will
+            // consume them. Request a normal paint without calling Render()
+            // directly from the UI callback.
             asd.Invalidate();
         }
 
