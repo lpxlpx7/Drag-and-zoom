@@ -146,20 +146,21 @@ namespace vatSys.PersistentPan
             if (delta == 0)
                 return;
 
-            MethodInfo getRange = asd.GetType().GetMethod(
-                "GetRange", BindingFlags.Instance | BindingFlags.Public,
-                null, Type.EmptyTypes, null);
-            MethodInfo setZoom = asd.GetType().GetMethod(
-                "SetZoom", BindingFlags.Instance | BindingFlags.Public,
-                null, new[] { typeof(double), typeof(bool), typeof(bool), typeof(bool) }, null);
-            if (getRange == null || setZoom == null)
+            Form form = asd.FindForm();
+            if (form == null)
                 return;
 
-            double current = Convert.ToDouble(getRange.Invoke(asd, null));
-            // End/PgDn change the range in 20% steps. Wheel uses the same
-            // direction: wheel up zooms in, wheel down zooms out.
-            double next = delta > 0 ? current * 0.8 : current * 1.25;
-            setZoom.Invoke(asd, new object[] { next, true, false, true });
+            // Use vatSys's own key handler so the wheel has exactly the same
+            // step, limits, and direction as END/PAGEDOWN. In the installed
+            // vatSys build: End = range decrease (zoom in), PgDn = range
+            // increase (zoom out).
+            MethodInfo keyDown = form.GetType().GetMethod(
+                "MainForm_KeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (keyDown == null)
+                return;
+
+            Keys key = delta > 0 ? Keys.End : Keys.PageDown;
+            keyDown.Invoke(form, new object[] { form, new KeyEventArgs(key) });
         }
 
         private static int MouseX(Message message)
