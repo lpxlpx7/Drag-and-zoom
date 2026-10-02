@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
+using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
@@ -18,13 +19,10 @@ namespace vatSys.PersistentPan
     public sealed class PersistentPanPlugin : IPlugin, IMessageFilter
     {
         private const int WmMouseMove = 0x0200;
-        private const int WmLButtonUp = 0x0202;
         private const int WmMButtonDown = 0x0207;
         private const int WmMButtonUp = 0x0208;
         private const int WmMouseWheel = 0x020A;
-        private const int MkMButton = 0x0010;
 
-        private readonly Dictionary<Control, object> lastCentres = new Dictionary<Control, object>();
         private readonly HashSet<Control> panning = new HashSet<Control>();
         private readonly Dictionary<IntPtr, Control> controls = new Dictionary<IntPtr, Control>();
         private readonly string logPath;
@@ -57,30 +55,28 @@ namespace vatSys.PersistentPan
                 {
                     case WmMButtonDown:
                         panning.Add(asd);
-                        SaveCentre(asd);
-                        Log("Middle down");
+                        Log("Middle down " + MouseX(message).ToString() + "," + MouseY(message).ToString());
                         break;
 
                     case WmMouseMove:
-                        if (panning.Contains(asd) && (((long)message.WParam.ToInt64() & MkMButton) != 0))
-                            SaveCentre(asd);
+                        // The native ASD handler performs the actual pan here.
+                        // We only need the final coordinates at MouseUp.
                         break;
 
                     case WmMButtonUp:
                         if (panning.Remove(asd))
                         {
-                            object finalCentre;
-                            if (!lastCentres.TryGetValue(asd, out finalCentre))
-                                finalCentre = ReadCentre(asd);
-                            lastCentres.Remove(asd);
-                            RestoreAfterVatSys(asd, finalCentre);
-                            Log("Middle up; restore captured centre");
+                            Point finalPoint = new Point(MouseX(message), MouseY(message));
+                            RestorePanAfterVatSys(asd, finalPoint);
+                            Log("Middle up " + finalPoint.X.ToString() + "," + finalPoint.Y.ToString() + "; replay final move");
                         }
                         break;
 
                     case WmMouseWheel:
-                        ZoomWithWheel(asd, SignedHighWord(message.WParam.ToInt64()));
-                        break;
+                        int delta = SignedHighWord(message.WParam.ToInt64());
+                        ZoomWithWheel(asd, delta);
+                        Log("Wheel " + delta.ToString());
+                        return true;
                 }
             }
             catch (Exception exception)
@@ -114,39 +110,32 @@ namespace vatSys.PersistentPan
             return null;
         }
 
-        private void SaveCentre(Control asd)
+        private static void RestorePanAfterVatSys(Control asd, Point finalPoint)
         {
-            object centre = ReadCentre(asd);
-            if (centre != null)
-                lastCentres[asd] = centre;
-        }
-
-        private static object ReadCentre(Control asd)
-        {
-            MethodInfo getRenderParams = asd.GetType().GetMethod(
-                "GetRenderParams", BindingFlags.Instance | BindingFlags.Public,
-                null, new[] { typeof(bool) }, null);
-            if (getRenderParams == null)
-                return null;
-
-            object renderParams = getRenderParams.Invoke(asd, new object[] { false });
-            PropertyInfo centre = renderParams == null ? null : renderParams.GetType().GetProperty("ScreenCentre");
-            return centre == null ? null : centre.GetValue(renderParams, null);
-        }
-
-        private static void RestoreAfterVatSys(Control asd, object centre)
-        {
-            if (centre == null || asd.IsDisposed)
+            if (asd.IsDisposed)
                 return;
 
             try
             {
                 asd.BeginInvoke((MethodInvoker)(() =>
                 {
-                    MethodInfo setDisplayCenter = asd.GetType().GetMethod(
-                        "SetDisplayCenter", BindingFlags.Instance | BindingFlags.Public);
-                    if (setDisplayCenter != null)
-                        setDisplayCenter.Invoke(asd, new[] { centre, (object)true, (object)false });
+                    // vatSys's own MouseUp resets QuickPan. Re-enable only its
+                    // temporary-pan flag and call its own MouseMove routine at
+                    // the release point. This reproduces the native calculation
+                    // without duplicating its map projection math.
+                    FieldInfo quickPan = asd.GetType().GetField(
+                        "QuickPan", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo mouseMove = asd.GetType().GetMethod(
+                        "ASD_MouseMove", BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (quickPan == null || mouseMove == null)
+                        return;
+
+                    quickPan.SetValue(asd, true);
+                    mouseMove.Invoke(asd, new object[] {
+                        asd,
+                        new MouseEventArgs(MouseButtons.Middle, 0, finalPoint.X, finalPoint.Y, 0)
+                    });
+                    quickPan.SetValue(asd, false);
                 }));
             }
             catch (InvalidOperationException) { }
@@ -157,25 +146,30 @@ namespace vatSys.PersistentPan
             if (delta == 0)
                 return;
 
-            MethodInfo getRenderParams = asd.GetType().GetMethod(
-                "GetRenderParams", BindingFlags.Instance | BindingFlags.Public,
-                null, new[] { typeof(bool) }, null);
+            MethodInfo getRange = asd.GetType().GetMethod(
+                "GetRange", BindingFlags.Instance | BindingFlags.Public,
+                null, Type.EmptyTypes, null);
             MethodInfo setZoom = asd.GetType().GetMethod(
                 "SetZoom", BindingFlags.Instance | BindingFlags.Public,
                 null, new[] { typeof(double), typeof(bool), typeof(bool), typeof(bool) }, null);
-            if (getRenderParams == null || setZoom == null)
+            if (getRange == null || setZoom == null)
                 return;
 
-            object renderParams = getRenderParams.Invoke(asd, new object[] { false });
-            PropertyInfo zoom = renderParams == null ? null : renderParams.GetType().GetProperty("Zoom");
-            if (zoom == null)
-                return;
-
-            double current = Convert.ToDouble(zoom.GetValue(renderParams, null));
+            double current = Convert.ToDouble(getRange.Invoke(asd, null));
             // End/PgDn change the range in 20% steps. Wheel uses the same
             // direction: wheel up zooms in, wheel down zooms out.
             double next = delta > 0 ? current * 0.8 : current * 1.25;
             setZoom.Invoke(asd, new object[] { next, true, false, true });
+        }
+
+        private static int MouseX(Message message)
+        {
+            return (short)(message.LParam.ToInt64() & 0xffff);
+        }
+
+        private static int MouseY(Message message)
+        {
+            return (short)((message.LParam.ToInt64() >> 16) & 0xffff);
         }
 
         private static int SignedHighWord(long value)
